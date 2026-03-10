@@ -1206,7 +1206,7 @@
 
         <div class="col-subtotal srls-subtotal">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);margin-bottom:6px">Credito SRL verso SRLS</div>
-          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">CF + Quota MOL + Royalty + Quota magazzino</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">CF + Quota MOL + Royalty + Quota materiale netta</div>
 
           <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
             <span style="color:var(--muted)">Costi Fissi (CF) — sempre dovuti</span>
@@ -1221,7 +1221,7 @@
             <span style="font-family:var(--mono);color:var(--text)" id="d-srls-royalty">€ 0,00</span>
           </div>
           <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border)">
-            <span style="color:var(--muted)">Quota magazzino mensile</span>
+            <span style="color:var(--muted)">Quota materiale (netta) da corrispondere a SRL</span>
             <span style="font-family:var(--mono);color:var(--accent3)" id="d-srls-magazzino">€ 0,00</span>
           </div>
 
@@ -1263,9 +1263,24 @@
           <span class="col-val" id="d-srl-extra-tot">€ 0,00</span>
         </div>
 
+        <!-- Sezione Intercompany del mese -->
+        <div class="col-section-label" style="margin-top:16px">🔄 Intercompany del mese</div>
+        <div class="col-row" id="d-ic-srl-srls-row">
+          <span class="col-label">SRL → SRLS (commissioni)</span>
+          <span class="col-val negative" id="d-ic-srl-srls">− € 0,00</span>
+        </div>
+        <div class="col-row" id="d-ic-srls-srl-row">
+          <span class="col-label">SRLS → SRL (commissioni)</span>
+          <span class="col-val positive" id="d-ic-srls-srl">€ 0,00</span>
+        </div>
+        <div class="col-row" style="border-top:1px dashed var(--border);margin-top:4px;padding-top:8px">
+          <span class="col-label" style="color:var(--muted)">Saldo netto IC</span>
+          <span class="col-val" id="d-ic-saldo">€ 0,00</span>
+        </div>
+
         <div class="col-subtotal srl-subtotal">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);margin-bottom:6px">Dovuto SRL → SRLS</div>
-          <div style="font-size:11px;color:var(--muted);margin-bottom:2px">60% fatturato estero/Amazon ± voci extra</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:2px">60% estero/Amazon ± voci extra ± IC netto</div>
           <div class="col-subtotal-val" id="d-srl-netto">€ 0,00</div>
         </div>
       </div>
@@ -1282,7 +1297,7 @@
           <div class="fattura-freccia">→</div>
           <div class="fattura-destinatario">PAYSOLUTION S.R.L.S.</div>
         </div>
-        <div class="fattura-oggetto">Fattura emessa da SRL · Quota MOL + Royalty + Smaltimento magazzino</div>
+        <div class="fattura-oggetto" id="f-srl-oggetto">Fattura emessa da SRL · Quota MOL + Royalty + Smaltimento magazzino</div>
         <div class="fattura-importo-iva" id="f-srl-ivainclusa">€ 0,00</div>
         <div class="fattura-imponibile" id="f-srl-imponibile">(imponibile € 0,00 + IVA 22% € 0,00)</div>
       </div>
@@ -1293,7 +1308,7 @@
           <div class="fattura-freccia">→</div>
           <div class="fattura-destinatario">TULLIO SERCI S.R.L.</div>
         </div>
-        <div class="fattura-oggetto">Merci vendute estero / Amazon (60% fatturato clienti)</div>
+        <div class="fattura-oggetto" id="f-srls-oggetto">Merci vendute estero / Amazon (60% fatturato clienti)</div>
         <div class="fattura-importo-iva" id="f-srls-ivainclusa">€ 0,00</div>
         <div class="fattura-imponibile" id="f-srls-imponibile">(imponibile € 0,00 + IVA 22% € 0,00)</div>
       </div>
@@ -1961,20 +1976,45 @@ function aggiornaMagForm() {
   const y = parseInt(document.getElementById('mag-anno').value);
   const m = parseInt(document.getElementById('mag-mese').value);
   const chiave = getChiave(y, m);
-  const dati = storico[chiave] || {};
-  const fatturatoLordoMag = Object.values(dati).reduce((a, v) => a + (parseFloat(v) || 0), 0);
-  const fatturato = fatturatoLordoMag / 1.22;
-  const auto = fatturato * (params.cm / 100);
+  const fatTotale = getFatturatoBaseMag(chiave);
+  const auto = fatTotale * (params.cm / 100);
   const rettifica = parseFloat(document.getElementById('mag-rettifica').value) || 0;
   const finale = Math.max(0, auto + rettifica);
   document.getElementById('mag-importo-auto').value = auto.toFixed(2);
   document.getElementById('mag-preview-finale').textContent = fmt(finale);
 }
 
+function getICMagTotale() {
+  // Acquisti IC SRL→SRLS: imponibile IVA esclusa × (1 + 8%) → entrano in magazzino
+  return venditeIC
+    .filter(v => v.dir === 'srl-srls')
+    .reduce((a, v) => a + (v.imp || 0) * getMaggiorazione(), 0);
+}
+
+// Fatturato totale base magazzino per un mese: F netto SRLS + fatturato clienti finali SRL (prezzo pieno)
+function getFatturatoBaseMag(chiave) {
+  // F netto SRLS
+  const datiSRLS = storico[chiave] || {};
+  const lordoSRLS = Object.values(datiSRLS).reduce((a, v) => a + (parseFloat(v) || 0), 0);
+  const nettoSRLS = lordoSRLS / 1.22;
+  // Fatturato clienti finali SRL (prezzo pieno, non il 60% ricavo SRLS)
+  // Amazon → lordo già netto; B2B → lordo già netto; B2C → lordo ÷ 1,22
+  const vendMese = vendite.filter(v => {
+    const d = new Date(v.data);
+    return getChiave(d.getFullYear(), d.getMonth()) === chiave;
+  });
+  const nettoEsteroFull = vendMese.reduce((a, v) => {
+    const lordo = v.lordo !== undefined ? v.lordo : v.prezzo;
+    if (v.canale === 'amazon' || v.canale === 'estero-b2b') return a + lordo;
+    return a + lordo / 1.22; // B2C e altro: scorporo IVA
+  }, 0);
+  return nettoSRLS + nettoEsteroFull;
+}
+
 function getMagStockIniziale() {
   // Il valore inserito nei parametri è IVA inclusa → scorporiamo il 22%
   const baseNetto = parseFloat(params.magStock || 50000) / 1.22;
-  return baseNetto + getAcquistiSRLMagTotale();
+  return baseNetto + getAcquistiSRLMagTotale() + getICMagTotale();
 }
 
 function updateMagKpi() {
@@ -1982,14 +2022,12 @@ function updateMagKpi() {
 
   // Mese corrente
   const chiaveCorrente = getChiave(currentYear, currentMonth);
-  const datiMese = storico[chiaveCorrente] || {};
-  const fatturatoLordoKpi = Object.values(datiMese).reduce((a, v) => a + (parseFloat(v) || 0), 0);
-  const fatturatoMese = fatturatoLordoKpi / 1.22;
-  const quotaAutoMese = fatturatoMese * (params.cm / 100);
+  const fatTotale = getFatturatoBaseMag(chiaveCorrente);
+  const quotaAutoMese = fatTotale * (params.cm / 100);
   const movCorrenteReg = movMagazzino.find(m => m.chiave === chiaveCorrente);
   const quotaMeseCorrente = movCorrenteReg ? movCorrenteReg.finale : quotaAutoMese;
 
-  // Cumulato = tutti i mesi registrati (escluso corrente se non registrato) + auto corrente
+  // Cumulato = tutti i mesi registrati + auto corrente
   const cumulatoRegistrato = movMagazzino.filter(m => m.chiave !== chiaveCorrente)
     .reduce((a, m) => a + m.finale, 0);
   const cumulatoTotale = cumulatoRegistrato + quotaMeseCorrente;
@@ -1997,6 +2035,12 @@ function updateMagKpi() {
   // Saldo residuo = stock − cumulato totale
   const residuo = Math.max(0, stock - cumulatoTotale);
   const pct = Math.min((cumulatoTotale / stock) * 100, 100);
+
+  // Dettaglio base calcolo
+  const datiMese = storico[chiaveCorrente] || {};
+  const lordoSRLS = Object.values(datiMese).reduce((a, v) => a + (parseFloat(v) || 0), 0);
+  const nettoSRLS = lordoSRLS / 1.22;
+  const nettoEstero = fatTotale - nettoSRLS;
 
   const el = id => document.getElementById(id);
   if (!el('mag-stock-iniziale')) return;
@@ -2010,9 +2054,12 @@ function updateMagKpi() {
   el('mag-pct-label').textContent = pct.toFixed(1) + '% completato';
   el('mag-cm-pct').textContent = params.cm + '%';
   el('mag-stock-label').textContent = fmt(stock);
-  el('mag-mese-formula').textContent = fatturatoMese > 0
-    ? `${params.cm}% × ${fmt(fatturatoMese)} (netto) = ${fmt(quotaAutoMese)}${movCorrenteReg?.rettifica ? ' (rettificato)' : ''}`
-    : 'Inserisci il fatturato SRLS del mese in corso';
+  const baseLabel = nettoEstero > 0
+    ? `${params.cm}% × (${fmt(nettoSRLS)} SRLS + ${fmt(nettoEstero)} estero) = ${fmt(quotaAutoMese)}`
+    : `${params.cm}% × ${fmt(nettoSRLS)} (netto SRLS) = ${fmt(quotaAutoMese)}`;
+  el('mag-mese-formula').textContent = fatTotale > 0
+    ? baseLabel + (movCorrenteReg?.rettifica ? ' (rettificato)' : '')
+    : 'Inserisci il fatturato del mese in corso';
 }
 
 async function salvaMovimentoMag() {
@@ -2411,7 +2458,12 @@ function updateDashboard() {
     return getChiave(d.getFullYear(), d.getMonth()) === chiaveMese;
   });
   const estFatturato = vendMese.reduce((a, v) => a + (v.lordo !== undefined ? v.lordo : v.prezzo), 0);
-  const estNettoTot = vendMese.reduce((a, v) => a + (v.netto !== undefined ? v.netto : v.prezzo), 0);
+  const estNettoTot = vendMese.reduce((a, v) => {
+    const lordo = v.lordo !== undefined ? v.lordo : v.prezzo;
+    // Amazon: lordo già netto (nessuno scorporo IVA)
+    if (v.canale === 'amazon') return a + lordo;
+    return a + (v.netto !== undefined ? v.netto : v.prezzo);
+  }, 0);
   const estRicavoSRLS = estNettoTot * 0.6;
   const estSconto = estNettoTot * 0.4;
 
@@ -2441,8 +2493,19 @@ function updateDashboard() {
   const chiaveCorrM = getChiave(currentYear, currentMonth);
   const movMagMese = movMagazzino.filter(m => m.chiave === chiaveCorrM);
   const totMagMese = movMagMese.reduce((a, m) => a + (parseFloat(m.finale) || 0), 0);
+  // Base magazzino = F netto SRLS + fatturato clienti finali SRL (prezzo pieno)
+  // estFatturato è già il lordo clienti; Amazon/B2B già netti, B2C va scorporato
+  const estNettoFull = vendMese.reduce((a, v) => {
+    const lordo = v.lordo !== undefined ? v.lordo : v.prezzo;
+    if (v.canale === 'amazon' || v.canale === 'estero-b2b') return a + lordo;
+    // B2C e altro: era IVA inclusa, scorpora
+    const nettoPieno = lordo / 1.22;
+    return a + nettoPieno;
+  }, 0);
+  // Verifica: estNettoFull deve essere >= estNettoTot (che è il 60% del prezzo pieno per estero)
+  const fatBaseMag = fatturato + estNettoFull;
   // Auto-calcola quota magazzino se non ancora registrata manualmente
-  const quotaMagMese = totMagMese > 0 ? totMagMese : fatturato * (params.cm / 100);
+  const quotaMagMese = totMagMese > 0 ? totMagMese : fatBaseMag * (params.cm / 100);
   const stockResiduo = Math.max(0, getMagStockIniziale() - movMagazzino.reduce((a, m) => a + m.finale, 0));
   const quotaMagEffettiva = Math.min(quotaMagMese, stockResiduo);
 
@@ -2475,11 +2538,6 @@ function updateDashboard() {
     extraTotRow.style.display = 'none';
   }
 
-  const dovutoSRLaSRLS = estRicavoSRLS + extraSRL;
-  const nettoEl = document.getElementById('d-srl-netto');
-  nettoEl.textContent = fmt(Math.abs(dovutoSRLaSRLS));
-  nettoEl.style.color = dovutoSRLaSRLS >= 0 ? 'var(--accent)' : 'var(--danger)';
-
   // Intercompany mese corrente
   const icMese = venditeIC.filter(v => {
     const d = new Date(v.data);
@@ -2487,27 +2545,57 @@ function updateDashboard() {
   });
   const icSrlDeveComm  = icMese.filter(v => v.dir === 'srl-srls').reduce((a, v) => a + v.comm, 0);
   const icSrlsDeveComm = icMese.filter(v => v.dir === 'srls-srl').reduce((a, v) => a + v.comm, 0);
+  const icSaldo = icSrlsDeveComm - icSrlDeveComm; // positivo = SRL incassa netto
 
-  const ovSRLSTot = creditoSRLConAcquisti + icSrlsDeveComm;
-  const ovSRLTot  = estRicavoSRLS + icSrlDeveComm;
+  // Popola sezione IC nella colonna SRL
+  const icSrlSrlsEl = document.getElementById('d-ic-srl-srls');
+  const icSrlsSrlEl = document.getElementById('d-ic-srls-srl');
+  const icSaldoEl   = document.getElementById('d-ic-saldo');
+  if (icSrlSrlsEl) {
+    icSrlSrlsEl.textContent = icSrlDeveComm > 0 ? '− ' + fmt(icSrlDeveComm) : '€ 0,00';
+    icSrlSrlsEl.style.color = icSrlDeveComm > 0 ? 'var(--danger)' : 'var(--muted)';
+    icSrlsSrlEl.textContent = icSrlsDeveComm > 0 ? fmt(icSrlsDeveComm) : '€ 0,00';
+    icSrlsSrlEl.style.color = icSrlsDeveComm > 0 ? 'var(--accent2)' : 'var(--muted)';
+    icSaldoEl.textContent = (icSaldo >= 0 ? '' : '− ') + fmt(Math.abs(icSaldo));
+    icSaldoEl.style.color = icSaldo >= 0 ? 'var(--accent2)' : 'var(--danger)';
+  }
+
+  // Nascondo righe IC se zero
+  if (document.getElementById('d-ic-srl-srls-row'))
+    document.getElementById('d-ic-srl-srls-row').style.display = icSrlDeveComm > 0 ? 'flex' : 'none';
+  if (document.getElementById('d-ic-srls-srl-row'))
+    document.getElementById('d-ic-srls-srl-row').style.display = icSrlsDeveComm > 0 ? 'flex' : 'none';
+
+  const dovutoSRLaSRLS = estRicavoSRLS + extraSRL - icSaldo;
+  const nettoEl = document.getElementById('d-srl-netto');
+  nettoEl.textContent = fmt(Math.abs(dovutoSRLaSRLS));
+  nettoEl.style.color = dovutoSRLaSRLS >= 0 ? 'var(--accent)' : 'var(--danger)';
 
   // ── FATTURE DI FINE MESE ──
   const IVA = 0.22;
-  // Fattura SRL → SRLS: CF + quota MOL + royalty + magazzino netto acquisti SRLS
-  const fSRLimponibile = cf + quotaMol + royalty + quotaMagNettoAcquisti;
+  // Fattura SRL → SRLS: CF + quota MOL + royalty + magazzino + commissioni IC SRL→SRLS
+  const fSRLimponibile = cf + quotaMol + royalty + quotaMagNettoAcquisti + icSrlDeveComm;
   const fSRLiva = fSRLimponibile * IVA;
   const fSRLtotale = fSRLimponibile + fSRLiva;
   document.getElementById('f-srl-ivainclusa').textContent = fmt(fSRLtotale);
   document.getElementById('f-srl-imponibile').textContent =
     `(imponibile ${fmt(fSRLimponibile)} + IVA 22% ${fmt(fSRLiva)})`;
+  document.getElementById('f-srl-oggetto') && (document.getElementById('f-srl-oggetto').textContent =
+    icSrlDeveComm > 0
+      ? 'Fattura emessa da SRL · Quota MOL + Royalty + Magazzino + Commissioni IC'
+      : 'Fattura emessa da SRL · Quota MOL + Royalty + Smaltimento magazzino');
 
-  // Fattura SRLS → SRL: merci estero/Amazon (60% fatturato clienti) = imponibile
-  const fSRLSimponibile = estRicavoSRLS;
+  // Fattura SRLS → SRL: merci estero/Amazon (60%) + commissioni IC SRLS→SRL
+  const fSRLSimponibile = estRicavoSRLS + icSrlsDeveComm;
   const fSRLSiva = fSRLSimponibile * IVA;
   const fSRLStotale = fSRLSimponibile + fSRLSiva;
   document.getElementById('f-srls-ivainclusa').textContent = fmt(fSRLStotale);
   document.getElementById('f-srls-imponibile').textContent =
     `(imponibile ${fmt(fSRLSimponibile)} + IVA 22% ${fmt(fSRLSiva)})`;
+  document.getElementById('f-srls-oggetto') && (document.getElementById('f-srls-oggetto').textContent =
+    icSrlsDeveComm > 0
+      ? 'Merci estero/Amazon (60%) + Commissioni IC SRLS → SRL'
+      : 'Merci vendute estero / Amazon (60% fatturato clienti)');
 
   // Threshold
   document.getElementById('thresholdBanner').className = 'threshold-banner' + (overSoglia ? ' show' : '');
@@ -2740,9 +2828,10 @@ function initEstero() {
 }
 
 function ivaInclusa(canale) {
-  // Amazon e Estero B2C → IVA inclusa al 22%, da scorporare
+  // Solo Estero B2C → IVA inclusa al 22%, da scorporare
+  // Amazon → importo già netto (accreditato da Amazon al netto di IVA e commissioni)
   // Estero B2B → già netto, nessuno scorporo
-  return canale === 'amazon' || canale === 'estero-b2c' || canale === 'altro';
+  return canale === 'estero-b2c' || canale === 'altro';
 }
 
 function imponibileNetto(lordo, canale) {
@@ -2756,8 +2845,9 @@ function aggiornaAnteprima() {
   const isB2B = canale === 'estero-b2b';
 
   // Aggiorna label campo prezzo
-  document.getElementById('e-prezzo-label').textContent = isB2B
-    ? 'Importo fattura (€ IVA escl.)'
+  const isAmazon = canale === 'amazon';
+  document.getElementById('e-prezzo-label').textContent = isB2B || isAmazon
+    ? (isAmazon ? 'Importo accreditato da Amazon (€ già netto IVA)' : 'Importo fattura (€ IVA escl.)')
     : 'Importo incassato (€ IVA incl.)';
 
   const netto = imponibileNetto(lordo, canale);
@@ -2767,7 +2857,7 @@ function aggiornaAnteprima() {
   document.getElementById('prev-prezzo').textContent = lordo ? fmt(lordo) : '€ —';
   document.getElementById('prev-netto').textContent = lordo ? fmt(netto) : '€ —';
   document.getElementById('prev-ricavo').textContent = lordo ? fmt(ricavo) : '€ —';
-  document.getElementById('prev-iva').textContent = lordo ? (isB2B ? 'n/a (B2B)' : fmt(iva)) : '€ —';
+  document.getElementById('prev-iva').textContent = lordo ? ((isB2B || isAmazon) ? 'n/a' : fmt(iva)) : '€ —';
   document.getElementById('prev-trasporto').textContent = trasporto ? fmt(trasporto) : '€ 0,00';
 }
 
@@ -2821,14 +2911,21 @@ function renderVendite() {
   const lista = getVenditeFiltrate();
 
   // Compatibilità: vecchie vendite senza netto usano prezzo direttamente
-  const getNetto = v => v.netto !== undefined ? v.netto : v.prezzo;
+  // Per Amazon: il lordo incassato è già netto (Amazon ha già tolto IVA e commissioni)
   const getLordo = v => v.lordo !== undefined ? v.lordo : v.prezzo;
+  const getNetto = v => {
+    const lordo = getLordo(v);
+    if (v.canale === 'amazon') return lordo; // Amazon: lordo = netto, nessuno scorporo
+    return v.netto !== undefined ? v.netto : v.prezzo;
+  };
+  const isNetto = v => v.canale === 'estero-b2b' || v.canale === 'amazon';
 
   const totLordo = lista.reduce((a, v) => a + getLordo(v), 0);
   const totNetto = lista.reduce((a, v) => a + getNetto(v), 0);
   const totRicavo = totNetto * 0.6;
   const totSconto = totNetto * 0.4;
-  const totIva = lista.reduce((a, v) => a + (v.iva || 0), 0);
+  // IVA totale: escludi Amazon (già netto) e B2B (nessuna IVA)
+  const totIva = lista.reduce((a, v) => a + (isNetto(v) ? 0 : (v.iva || 0)), 0);
   const canaliCount = lista.reduce((a, v) => { a[v.canale] = (a[v.canale]||0)+1; return a; }, {});
   const canaliLabel = Object.entries(canaliCount).map(([k,n]) => `${k}: ${n}`).join(' · ') || '—';
 
@@ -2856,6 +2953,7 @@ function renderVendite() {
     const ricavo = netto * 0.6;
     const dateFmt = new Date(v.data).toLocaleDateString('it-IT');
     const isB2B = v.canale === 'estero-b2b';
+    const isAmz = v.canale === 'amazon';
     const badgeClass = v.canale === 'amazon' ? 'amazon' : (v.canale === 'estero-b2b' || v.canale === 'estero-b2c' || v.canale === 'estero') ? 'estero' : 'altro';
     const badgeLabel = v.canale === 'amazon' ? '⬛ Amazon' : v.canale === 'estero-b2b' ? '🌍 Estero B2B' : v.canale === 'estero-b2c' ? '🌍 Estero B2C' : v.canale === 'estero' ? '🌍 Estero' : '◆ Altro';
     html += `<tr>
@@ -2863,7 +2961,7 @@ function renderVendite() {
       <td><span class="channel-badge ${badgeClass}">${badgeLabel}</span></td>
       <td style="color:var(--text);max-width:200px">${v.desc}</td>
       <td class="mono">${fmt(lordo)}</td>
-      <td class="mono" style="color:var(--muted)">${isB2B ? '<span style="color:var(--border)">n/a</span>' : fmt(iva)}</td>
+      <td class="mono" style="color:var(--muted)">${(isB2B || isAmz) ? '<span style="color:var(--border)">n/a</span>' : fmt(iva)}</td>
       <td class="mono">${fmt(netto)}</td>
       <td class="green">${fmt(ricavo)}</td>
       <td class="blue">${v.trasporto > 0 ? fmt(v.trasporto) : '<span style="color:var(--border)">—</span>'}</td>
@@ -3068,12 +3166,22 @@ function apriReportStampa() {
     return getChiave(d.getFullYear(), d.getMonth()) === chiave;
   });
   const estFat = vendMese.reduce((a, v) => a + (v.lordo !== undefined ? v.lordo : v.prezzo || 0), 0);
-  const estNetto = vendMese.reduce((a, v) => a + (v.netto !== undefined ? v.netto : v.prezzo || 0), 0);
+  const estNetto = vendMese.reduce((a, v) => {
+    const lordo = v.lordo !== undefined ? v.lordo : v.prezzo || 0;
+    if (v.canale === 'amazon') return a + lordo;
+    return a + (v.netto !== undefined ? v.netto : lordo);
+  }, 0);
   const estRicavo = estNetto * 0.6;
 
-  // Magazzino mese
+  // Magazzino mese — base = F SRLS + fatturato clienti finali SRL (prezzo pieno)
+  const estNettoFullRep = vendMese.reduce((a, v) => {
+    const lordo = v.lordo !== undefined ? v.lordo : v.prezzo || 0;
+    if (v.canale === 'amazon' || v.canale === 'estero-b2b') return a + lordo;
+    return a + lordo / 1.22;
+  }, 0);
+  const fatBaseMagRep = fatturato + estNettoFullRep;
   const movMag = movMagazzino.find(m => m.chiave === chiave);
-  const quotaMag = movMag ? movMag.finale : Math.min(fatturato * (params.cm / 100), getMagStockIniziale());
+  const quotaMag = movMag ? movMag.finale : Math.min(fatBaseMagRep * (params.cm / 100), getMagStockIniziale());
   const magTotDedotto = movMagazzino.reduce((a, m) => a + m.finale, 0) + (movMag ? 0 : quotaMag);
   const magResiduo = Math.max(0, getMagStockIniziale() - magTotDedotto);
 
