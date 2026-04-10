@@ -2340,28 +2340,118 @@ let costiVoci = DEFAULT_COSTI.map(c => ({...c}));
 let storico = {};
 let currentYear, currentMonth;
 
-// ─── GOOGLE SHEETS API ───────────────────────────────
-const GS_URL = 'https://script.google.com/macros/s/AKfycbyXOeR15KagoK7g8-fyZvfMWr5J_NQOQPBUGMnJlSO8B4ky4Qc00bipHWAcBlZ6Gsrh/exec';
+// ─── GITHUB JSON BACKEND ─────────────────────────────
+// Configurazione: salvata in localStorage, mai nel codice
+function ghConfig() {
+  return {
+    owner: localStorage.getItem('gh_owner') || '',
+    repo:  localStorage.getItem('gh_repo')  || '',
+    token: localStorage.getItem('gh_token') || '',
+  };
+}
+
+function ghConfigured() {
+  const c = ghConfig();
+  return c.owner && c.repo && c.token;
+}
+
+function ghApiUrl() {
+  const c = ghConfig();
+  return `https://api.github.com/repos/${c.owner}/${c.repo}/contents/data/dati.json`;
+}
+
+function ghHeaders() {
+  const c = ghConfig();
+  return {
+    'Authorization': `token ${c.token}`,
+    'Accept': 'application/vnd.github.v3+json',
+    'Content-Type': 'application/json',
+  };
+}
+
+// Cache SHA del file (necessario per gli aggiornamenti)
+let _ghSha = null;
+
+async function ghReadFile() {
+  try {
+    const r = await fetch(ghApiUrl(), { headers: ghHeaders() });
+    if (r.status === 404) return { data: {}, sha: null };
+    if (!r.ok) {
+      const err = await r.json();
+      throw new Error(`GitHub API ${r.status}: ${err.message}`);
+    }
+    const j = await r.json();
+    _ghSha = j.sha;
+    const content = JSON.parse(atob(j.content.replace(/\n/g, '')));
+    return { data: content, sha: j.sha };
+  } catch(e) {
+    console.error('ghReadFile error', e);
+    throw e;
+  }
+}
+
+async function ghWriteFile(data) {
+  const content = btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2))));
+  const body = { message: `Update dati ${new Date().toISOString()}`, content };
+  if (_ghSha) body.sha = _ghSha;
+  const r = await fetch(ghApiUrl(), {
+    method: 'PUT',
+    headers: ghHeaders(),
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const err = await r.json();
+    throw new Error(`GitHub API ${r.status}: ${err.message}`);
+  }
+  const j = await r.json();
+  _ghSha = j.content.sha;
+  return j;
+}
+
+// Compatibilità con le chiamate esistenti gsGet/gsSet/gsGetAll
+async function gsGetAll() {
+  if (!ghConfigured()) return {};
+  try {
+    const { data } = await ghReadFile();
+    return data;
+  } catch(e) {
+    console.error('gsGetAll error', e);
+    showError('❌ Errore lettura dati da GitHub: ' + e.message);
+    return {};
+  }
+}
 
 async function gsGet(key) {
-  try {
-    const r = await fetch(`${GS_URL}?action=get&key=${encodeURIComponent(key)}`);
-    const d = await r.json();
-    return d.value || null;
-  } catch(e) { return null; }
+  const all = await gsGetAll();
+  return all[key] || null;
 }
 
 async function gsSet(key, value) {
+  if (!ghConfigured()) { console.warn('GitHub non configurato'); return; }
   try {
-    await fetch(`${GS_URL}?action=set&key=${encodeURIComponent(key)}&value=${encodeURIComponent(JSON.stringify(value))}`);
-  } catch(e) { console.error('gsSet error', e); }
+    // Leggi stato attuale, aggiorna la chiave, riscrivi
+    const { data } = await ghReadFile();
+    data[key] = JSON.stringify(value);
+    await ghWriteFile(data);
+  } catch(e) {
+    console.error('gsSet error', e);
+    showError('❌ Errore salvataggio su GitHub: ' + e.message);
+  }
 }
 
-async function gsGetAll() {
-  try {
-    const r = await fetch(`${GS_URL}?action=getAll`);
-    return await r.json();
-  } catch(e) { return {}; }
+function showError(msg) {
+  let el = document.getElementById('gs-loading');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'gs-loading';
+    el.style.cssText = 'position:fixed;top:0;left:0;right:0;text-align:center;font-size:13px;font-weight:600;padding:8px;z-index:9999;font-family:DM Sans,sans-serif';
+    document.body.prepend(el);
+  }
+  el.style.background = '#f87171';
+  el.style.color = '#0d0f14';
+  el.textContent = msg;
+  el.style.display = 'block';
+  setTimeout(() => { if(el) el.style.display = 'none'; }, 6000);
 }
 
 function showLoading(msg) {
@@ -2372,12 +2462,95 @@ function showLoading(msg) {
     el.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#f0b429;color:#0d0f14;text-align:center;font-size:13px;font-weight:600;padding:8px;z-index:9999;font-family:DM Sans,sans-serif';
     document.body.prepend(el);
   }
+  el.style.background = '#f0b429';
+  el.style.color = '#0d0f14';
   el.textContent = msg;
   el.style.display = 'block';
 }
 function hideLoading() {
   const el = document.getElementById('gs-loading');
   if (el) el.style.display = 'none';
+}
+
+// ─── CONFIGURAZIONE GITHUB ───────────────────────────
+function mostraConfigGitHub(afterSave) {
+  const old2 = document.getElementById('gh-config-screen');
+  if (old2) old2.remove();
+  const c = ghConfig();
+  const div = document.createElement('div');
+  div.id = 'gh-config-screen';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(13,15,20,0.97);display:flex;align-items:center;justify-content:center;z-index:10000;font-family:'DM Sans',sans-serif;';
+  div.innerHTML = `
+    <div style="background:#161a23;border:1px solid #2a3145;border-radius:16px;padding:40px;width:100%;max-width:480px;box-shadow:0 24px 64px rgba(0,0,0,0.6)">
+      <div style="font-family:'Syne',sans-serif;font-size:20px;font-weight:800;color:#f0b429;margin-bottom:6px">⚙️ Configurazione GitHub</div>
+      <div style="font-size:13px;color:#8090b0;margin-bottom:28px;line-height:1.6">
+        I dati vengono salvati nel tuo repository GitHub.<br>
+        Il token rimane solo su questo browser — non viene mai trasmesso ad altri.
+      </div>
+      <div style="margin-bottom:16px">
+        <label style="font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#8090b0;display:block;margin-bottom:6px">GitHub Username</label>
+        <input id="gh-cfg-owner" type="text" value="${c.owner}" placeholder="es. tullio2008s-ai"
+          style="width:100%;background:#1e2330;border:1px solid #2a3145;border-radius:8px;color:#e8ecf4;font-family:'DM Mono',monospace;font-size:14px;padding:10px 14px;outline:none">
+      </div>
+      <div style="margin-bottom:16px">
+        <label style="font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#8090b0;display:block;margin-bottom:6px">Nome Repository</label>
+        <input id="gh-cfg-repo" type="text" value="${c.repo}" placeholder="es. -gettoniere-dashboard"
+          style="width:100%;background:#1e2330;border:1px solid #2a3145;border-radius:8px;color:#e8ecf4;font-family:'DM Mono',monospace;font-size:14px;padding:10px 14px;outline:none">
+      </div>
+      <div style="margin-bottom:28px">
+        <label style="font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#8090b0;display:block;margin-bottom:6px">Personal Access Token</label>
+        <input id="gh-cfg-token" type="password" value="${c.token}" placeholder="ghp_xxxxxxxxxxxx"
+          style="width:100%;background:#1e2330;border:1px solid #2a3145;border-radius:8px;color:#e8ecf4;font-family:'DM Mono',monospace;font-size:14px;padding:10px 14px;outline:none">
+        <div style="font-size:11px;color:#8090b0;margin-top:6px">
+          github.com → Settings → Developer settings → Personal access tokens (classic) → scope: repo
+        </div>
+      </div>
+      <div style="display:flex;gap:12px">
+        <button onclick="salvaConfigGitHub()" style="flex:1;background:#f0b429;color:#0d0f14;border:none;border-radius:8px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif">
+          ✓ Salva e connetti
+        </button>
+        ${c.token ? '<button onclick="document.getElementById('gh-config-screen').remove()" style="background:transparent;color:#8090b0;border:1px solid #2a3145;border-radius:8px;padding:12px 20px;font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif">Annulla</button>' : ''}
+      </div>
+      <div id="gh-cfg-error" style="margin-top:12px;font-size:12px;color:#f87171;display:none"></div>
+    </div>
+  `;
+  document.body.appendChild(div);
+  window._ghAfterSave = afterSave;
+}
+
+async function salvaConfigGitHub() {
+  const owner = document.getElementById('gh-cfg-owner').value.trim();
+  const repo  = document.getElementById('gh-cfg-repo').value.trim();
+  const token = document.getElementById('gh-cfg-token').value.trim();
+  const errEl = document.getElementById('gh-cfg-error');
+  if (!owner || !repo || !token) {
+    errEl.textContent = 'Compila tutti i campi.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  const btn = document.querySelector('#gh-config-screen button');
+  btn.textContent = '⏳ Verifica connessione…';
+  btn.disabled = true;
+  try {
+    const testUrl = `https://api.github.com/repos/${owner}/${repo}/contents/data/dati.json`;
+    const r = await fetch(testUrl, {
+      headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    if (r.status === 401) throw new Error('Token non valido o scaduto.');
+    if (r.status === 403) throw new Error('Permessi insufficienti. Verifica scope "repo".');
+    // 404 = file non esiste ancora = ok, lo creeremo
+    localStorage.setItem('gh_owner', owner);
+    localStorage.setItem('gh_repo',  repo);
+    localStorage.setItem('gh_token', token);
+    document.getElementById('gh-config-screen').remove();
+    if (window._ghAfterSave) window._ghAfterSave();
+  } catch(e) {
+    btn.textContent = '✓ Salva e connetti';
+    btn.disabled = false;
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+  }
 }
 
 // ─── INIT ────────────────────────────────────────────
@@ -2410,8 +2583,26 @@ async function init() {
   // Navigatore mese dashboard
   aggiornaNavDash();
 
-  // Carica tutti i dati da Google Sheets
-  showLoading('⏳ Caricamento dati da Google Sheets…');
+  // Verifica configurazione GitHub
+  if (!ghConfigured()) {
+    mostraConfigGitHub(() => init());
+    return;
+  }
+
+  // Aggiunge pulsante configurazione nell'header se non esiste
+  if (!document.getElementById('gh-config-btn')) {
+    const btn = document.createElement('button');
+    btn.id = 'gh-config-btn';
+    btn.title = 'Configura GitHub';
+    btn.textContent = '⚙️ GitHub';
+    btn.style.cssText = 'background:transparent;border:1px solid #2a3145;border-radius:6px;color:#8090b0;font-size:11px;padding:4px 10px;cursor:pointer;font-family:'DM Sans',sans-serif;margin-right:8px';
+    btn.onclick = () => mostraConfigGitHub(() => location.reload());
+    const header = document.querySelector('header');
+    if (header) header.appendChild(btn);
+  }
+
+  // Carica tutti i dati da GitHub JSON
+  showLoading('⏳ Caricamento dati da GitHub…');
   try {
     const all = await gsGetAll();
 
@@ -2438,7 +2629,7 @@ async function init() {
         acquisti = raw;
       }
     }
-  } catch(e) { console.error('Errore caricamento', e); }
+  } catch(e) { console.error('Errore caricamento da GitHub', e); }
   hideLoading();
 
   renderGiorniGrid();
